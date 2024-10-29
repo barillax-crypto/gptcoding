@@ -180,6 +180,7 @@ def logout_user(call):
         conn.commit()
     conn.close()
 
+    user_data.pop(call.message.chat.id, None)
     bot.send_message(call.message.chat.id, "Вы успешно вышли из системы. Для повторного доступа авторизуйтесь снова.")
     send_welcome(call.message)
 
@@ -266,6 +267,7 @@ def process_login_password(message):
         cursor.execute("UPDATE users SET token_expiry=? WHERE login=?", (token_expiry.isoformat(), login))
         conn.commit()
         bot.send_message(message.chat.id, "Авторизация успешна. Доступ активен на 24 часа.")
+        user_data[message.chat.id]['login'] = login
         send_requisites_menu(login, message.chat.id)
     else:
         bot.send_message(message.chat.id, "Неверный логин или пароль.")
