@@ -8,7 +8,7 @@ TOKEN = "7662974159:AAHlvoRjIXGeyPdNiE_IJB3LeMvzLJHUHDE"
 bot = telebot.TeleBot(TOKEN)
 
 # Путь к базе данных
-DB_PATH = "/storage/emulated/0/FinancialHelperBot/financial_helper.db"
+DB_PATH = "financial_helper.db"
 
 # Словарь для хранения промежуточных данных пользователей
 user_data = {}
