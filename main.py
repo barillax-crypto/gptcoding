@@ -20,8 +20,8 @@ def init_db():
     # Таблица пользователей
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS users (
-            user_id INTEGER PRIMARY KEY,
-            login TEXT,
+            login TEXT PRIMARY KEY,
+            user_id INTEGER,
             password TEXT,
             token_expiry TIMESTAMP
         )
@@ -30,10 +30,10 @@ def init_db():
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS requisites (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER,
+            login TEXT,
             name TEXT,
             value TEXT,
-            FOREIGN KEY (user_id) REFERENCES users (user_id)
+            FOREIGN KEY (login) REFERENCES users (login)
         )
     ''')
     conn.commit()
@@ -43,10 +43,10 @@ def init_db():
 init_db()
 
 # Функция для проверки авторизации пользователя
-def is_authorized(chat_id):
+def is_authorized(login):
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
-    cursor.execute("SELECT token_expiry FROM users WHERE user_id=?", (chat_id,))
+    cursor.execute("SELECT token_expiry FROM users WHERE login=?", (login,))
     result = cursor.fetchone()
     conn.close()
     
@@ -59,8 +59,9 @@ def is_authorized(chat_id):
 # Команда /start
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
-    if is_authorized(message.chat.id):
-        send_requisites_menu(message.chat.id)
+    user_login = user_data.get(message.chat.id, {}).get('login')
+    if user_login and is_authorized(user_login):
+        send_requisites_menu(user_login, message.chat.id)
     else:
         markup = InlineKeyboardMarkup()
         markup.add(InlineKeyboardButton("Регистрация", callback_data="register"))
@@ -68,12 +69,12 @@ def send_welcome(message):
         bot.send_message(message.chat.id, "Добро пожаловать! Пожалуйста, зарегистрируйтесь или авторизуйтесь.", reply_markup=markup)
 
 # Функция для отправки меню с реквизитами
-def send_requisites_menu(chat_id):
+def send_requisites_menu(login, chat_id):
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
 
     # Получение реквизитов для пользователя
-    cursor.execute("SELECT id, name FROM requisites WHERE user_id=?", (chat_id,))
+    cursor.execute("SELECT id, name FROM requisites WHERE login=?", (login,))
     requisites = cursor.fetchall()
     conn.close()
 
@@ -125,7 +126,9 @@ def delete_requisite(call):
     conn.close()
 
     # Вернуться к списку реквизитов после удаления
-    send_requisites_menu(call.message.chat.id)
+    user_login = user_data.get(call.message.chat.id, {}).get('login')
+    if user_login:
+        send_requisites_menu(user_login, call.message.chat.id)
 
 # Обработка инлайн кнопок для добавления реквизита
 @bot.callback_query_handler(func=lambda call: call.data == "add_requisite")
@@ -138,7 +141,7 @@ def process_add_requisite_name(message):
     if not name:
         bot.send_message(message.chat.id, "Название не может быть пустым. Пожалуйста, попробуйте снова.")
         return
-    user_data[message.chat.id] = {'name': name}
+    user_data[message.chat.id] = {'name': name, **user_data.get(message.chat.id, {})}
     msg = bot.send_message(message.chat.id, "Введите значение реквизита:")
     bot.register_next_step_handler(msg, process_add_requisite_value)
 
@@ -148,7 +151,8 @@ def process_add_requisite_value(message):
         bot.send_message(message.chat.id, "Значение не может быть пустым. Пожалуйста, попробуйте снова.")
         return
     name = user_data.get(message.chat.id, {}).get('name')
-    if not name:
+    login = user_data.get(message.chat.id, {}).get('login')
+    if not name or not login:
         bot.send_message(message.chat.id, "Что-то пошло не так. Попробуйте снова.")
         return
 
@@ -156,12 +160,12 @@ def process_add_requisite_value(message):
     cursor = conn.cursor()
 
     # Добавление реквизита в базу данных
-    cursor.execute("INSERT INTO requisites (user_id, name, value) VALUES (?, ?, ?)",
-                   (message.chat.id, name, value))
+    cursor.execute("INSERT INTO requisites (login, name, value) VALUES (?, ?, ?)",
+                   (login, name, value))
     conn.commit()
     conn.close()
     bot.send_message(message.chat.id, "Реквизит успешно добавлен.")
-    send_requisites_menu(message.chat.id)
+    send_requisites_menu(login, message.chat.id)
 
 # Обработка инлайн кнопок для выхода из аккаунта
 @bot.callback_query_handler(func=lambda call: call.data == "logout")
@@ -170,8 +174,10 @@ def logout_user(call):
     cursor = conn.cursor()
 
     # Удаление токена авторизации пользователя
-    cursor.execute("UPDATE users SET token_expiry=NULL WHERE user_id=?", (call.message.chat.id,))
-    conn.commit()
+    user_login = user_data.get(call.message.chat.id, {}).get('login')
+    if user_login:
+        cursor.execute("UPDATE users SET token_expiry=NULL WHERE login=?", (user_login,))
+        conn.commit()
     conn.close()
 
     bot.send_message(call.message.chat.id, "Вы успешно вышли из системы. Для повторного доступа авторизуйтесь снова.")
@@ -180,7 +186,9 @@ def logout_user(call):
 # Обработка инлайн кнопок для навигации "Назад"
 @bot.callback_query_handler(func=lambda call: call.data == "back_to_requisites")
 def back_to_requisites(call):
-    send_requisites_menu(call.message.chat.id)
+    user_login = user_data.get(call.message.chat.id, {}).get('login')
+    if user_login:
+        send_requisites_menu(user_login, call.message.chat.id)
 
 # Обработка инлайн кнопок для регистрации и авторизации
 @bot.callback_query_handler(func=lambda call: call.data == "register")
@@ -216,8 +224,8 @@ def process_registration_password(message):
         bot.send_message(message.chat.id, "Пользователь с таким логином уже существует.")
     else:
         # Добавление нового пользователя
-        cursor.execute("INSERT INTO users (user_id, login, password) VALUES (?, ?, ?)",
-                       (message.chat.id, login, password))
+        cursor.execute("INSERT INTO users (login, user_id, password) VALUES (?, ?, ?)",
+                       (login, message.chat.id, password))
         conn.commit()
         bot.send_message(message.chat.id, "Регистрация успешна. Теперь вы можете авторизоваться.")
     conn.close()
@@ -255,10 +263,10 @@ def process_login_password(message):
     if user:
         # Обновление токена авторизации на 24 часа
         token_expiry = datetime.now() + timedelta(hours=24)
-        cursor.execute("UPDATE users SET token_expiry=? WHERE user_id=?", (token_expiry.isoformat(), message.chat.id))
+        cursor.execute("UPDATE users SET token_expiry=? WHERE login=?", (token_expiry.isoformat(), login))
         conn.commit()
         bot.send_message(message.chat.id, "Авторизация успешна. Доступ активен на 24 часа.")
-        send_requisites_menu(message.chat.id)
+        send_requisites_menu(login, message.chat.id)
     else:
         bot.send_message(message.chat.id, "Неверный логин или пароль.")
     conn.close()
