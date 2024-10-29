@@ -17,21 +17,24 @@ user_data = {}
 def init_db():
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
+    # Таблица пользователей
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS users (
-            user_id INTEGER PRIMARY KEY,
-            login TEXT UNIQUE,
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
+            login TEXT,
             password TEXT,
             token_expiry TIMESTAMP
         )
     ''')
+    # Таблица реквизитов
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS requisites (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id INTEGER,
             name TEXT,
             value TEXT,
-            FOREIGN KEY (user_id) REFERENCES users (user_id)
+            FOREIGN KEY (user_id) REFERENCES users (id)
         )
     ''')
     conn.commit()
@@ -41,10 +44,10 @@ def init_db():
 init_db()
 
 # Функция для проверки авторизации пользователя
-def is_authorized(user_id):
+def is_authorized(chat_id):
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
-    cursor.execute("SELECT token_expiry FROM users WHERE user_id=?", (user_id,))
+    cursor.execute("SELECT token_expiry FROM users WHERE user_id=? ORDER BY id DESC LIMIT 1", (chat_id,))
     result = cursor.fetchone()
     conn.close()
     
@@ -70,9 +73,16 @@ def send_requisites_menu(chat_id):
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
 
-    # Получение реквизитов для пользователя
-    cursor.execute("SELECT id, name FROM requisites WHERE user_id IN (SELECT user_id FROM users WHERE login=?)", (user_data.get(chat_id, {}).get('login'),))
-    requisites = cursor.fetchall()
+    # Получение последнего `id` пользователя по `user_id`
+    cursor.execute("SELECT id FROM users WHERE user_id=? ORDER BY id DESC LIMIT 1", (chat_id,))
+    user_row = cursor.fetchone()
+    if user_row:
+        user_db_id = user_row[0]
+        # Получение реквизитов для пользователя
+        cursor.execute("SELECT id, name FROM requisites WHERE user_id=?", (user_db_id,))
+        requisites = cursor.fetchall()
+    else:
+        requisites = []
     conn.close()
 
     markup = InlineKeyboardMarkup()
@@ -83,6 +93,109 @@ def send_requisites_menu(chat_id):
     markup.add(InlineKeyboardButton("Выход", callback_data="logout"))
     
     bot.send_message(chat_id, "Ваши реквизиты:", reply_markup=markup)
+
+# Обработка инлайн кнопок для просмотра реквизита
+@bot.callback_query_handler(func=lambda call: call.data.startswith("view_"))
+def view_requisite(call):
+    req_id = int(call.data.split('_')[1])
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+
+    # Получение реквизита для пользователя
+    cursor.execute("SELECT name, value FROM requisites WHERE id=?", (req_id,))
+    requisite = cursor.fetchone()
+    conn.close()
+
+    if requisite:
+        name, value = requisite
+        response = f"**{name}**\n{value}"
+        markup = InlineKeyboardMarkup()
+        markup.add(InlineKeyboardButton("Удалить реквизит", callback_data=f"delete_{req_id}"))
+        markup.add(InlineKeyboardButton("Назад", callback_data="back_to_requisites"))
+        bot.send_message(call.message.chat.id, response, reply_markup=markup, parse_mode="Markdown")
+    else:
+        bot.send_message(call.message.chat.id, "Реквизит не найден.")
+
+# Обработка инлайн кнопок для удаления реквизита
+@bot.callback_query_handler(func=lambda call: call.data.startswith("delete_"))
+def delete_requisite(call):
+    req_id = int(call.data.split('_')[1])
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+
+    # Удаление реквизита
+    cursor.execute("DELETE FROM requisites WHERE id=?", (req_id,))
+    if cursor.rowcount > 0:
+        bot.send_message(call.message.chat.id, "Реквизит успешно удален.")
+    else:
+        bot.send_message(call.message.chat.id, "Реквизит не найден.")
+    conn.commit()
+    conn.close()
+
+    # Вернуться к списку реквизитов после удаления
+    send_requisites_menu(call.message.chat.id)
+
+# Обработка инлайн кнопок для добавления реквизита
+@bot.callback_query_handler(func=lambda call: call.data == "add_requisite")
+def add_requisite(call):
+    msg = bot.send_message(call.message.chat.id, "Введите название реквизита:")
+    bot.register_next_step_handler(msg, process_add_requisite_name)
+
+def process_add_requisite_name(message):
+    name = message.text.strip()
+    if not name:
+        bot.send_message(message.chat.id, "Название не может быть пустым. Пожалуйста, попробуйте снова.")
+        return
+    user_data[message.chat.id] = {'name': name}
+    msg = bot.send_message(message.chat.id, "Введите значение реквизита:")
+    bot.register_next_step_handler(msg, process_add_requisite_value)
+
+def process_add_requisite_value(message):
+    value = message.text.strip()
+    if not value:
+        bot.send_message(message.chat.id, "Значение не может быть пустым. Пожалуйста, попробуйте снова.")
+        return
+    name = user_data.get(message.chat.id, {}).get('name')
+    if not name:
+        bot.send_message(message.chat.id, "Что-то пошло не так. Попробуйте снова.")
+        return
+
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+
+    # Получение `id` пользователя
+    cursor.execute("SELECT id FROM users WHERE user_id=? ORDER BY id DESC LIMIT 1", (message.chat.id,))
+    user_row = cursor.fetchone()
+    if user_row:
+        user_db_id = user_row[0]
+        # Добавление реквизита в базу данных
+        cursor.execute("INSERT INTO requisites (user_id, name, value) VALUES (?, ?, ?)",
+                       (user_db_id, name, value))
+        conn.commit()
+        bot.send_message(message.chat.id, "Реквизит успешно добавлен.")
+        send_requisites_menu(message.chat.id)
+    else:
+        bot.send_message(message.chat.id, "Пользователь не найден. Пожалуйста, авторизуйтесь.")
+    conn.close()
+
+# Обработка инлайн кнопок для выхода из аккаунта
+@bot.callback_query_handler(func=lambda call: call.data == "logout")
+def logout_user(call):
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+
+    # Удаление токена авторизации пользователя
+    cursor.execute("UPDATE users SET token_expiry=NULL WHERE user_id=?", (call.message.chat.id,))
+    conn.commit()
+    conn.close()
+
+    bot.send_message(call.message.chat.id, "Вы успешно вышли из системы. Для повторного доступа авторизуйтесь снова.")
+    send_welcome(call.message)
+
+# Обработка инлайн кнопок для навигации "Назад"
+@bot.callback_query_handler(func=lambda call: call.data == "back_to_requisites")
+def back_to_requisites(call):
+    send_requisites_menu(call.message.chat.id)
 
 # Обработка инлайн кнопок для регистрации и авторизации
 @bot.callback_query_handler(func=lambda call: call.data == "register")
@@ -112,10 +225,10 @@ def process_registration_password(message):
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
 
-    # Проверка, существует ли уже пользователь с таким user_id
-    cursor.execute("SELECT * FROM users WHERE user_id=? OR login=?", (message.chat.id, login))
+    # Проверка, существует ли уже пользователь с таким логином
+    cursor.execute("SELECT * FROM users WHERE login=?", (login,))
     if cursor.fetchone() is not None:
-        bot.send_message(message.chat.id, "Пользователь с таким логином или ID уже существует.")
+        bot.send_message(message.chat.id, "Пользователь с таким логином уже существует.")
     else:
         # Добавление нового пользователя
         cursor.execute("INSERT INTO users (user_id, login, password) VALUES (?, ?, ?)",
@@ -157,7 +270,7 @@ def process_login_password(message):
     if user:
         # Обновление токена авторизации на 24 часа
         token_expiry = datetime.now() + timedelta(hours=24)
-        cursor.execute("UPDATE users SET token_expiry=? WHERE login=?", (token_expiry.isoformat(), login))
+        cursor.execute("UPDATE users SET token_expiry=? WHERE user_id=?", (token_expiry.isoformat(), message.chat.id))
         conn.commit()
         bot.send_message(message.chat.id, "Авторизация успешна. Доступ активен на 24 часа.")
         send_requisites_menu(message.chat.id)
