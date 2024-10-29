@@ -71,7 +71,7 @@ def send_requisites_menu(chat_id):
     cursor = conn.cursor()
 
     # Получение реквизитов для пользователя
-    cursor.execute("SELECT id, name FROM requisites WHERE user_id=?", (chat_id,))
+    cursor.execute("SELECT id, name FROM requisites WHERE user_id IN (SELECT user_id FROM users WHERE login=?)", (user_data.get(chat_id, {}).get('login'),))
     requisites = cursor.fetchall()
     conn.close()
 
@@ -157,7 +157,7 @@ def process_login_password(message):
     if user:
         # Обновление токена авторизации на 24 часа
         token_expiry = datetime.now() + timedelta(hours=24)
-        cursor.execute("UPDATE users SET token_expiry=? WHERE user_id=?", (token_expiry.isoformat(), message.chat.id))
+        cursor.execute("UPDATE users SET token_expiry=? WHERE login=?", (token_expiry.isoformat(), login))
         conn.commit()
         bot.send_message(message.chat.id, "Авторизация успешна. Доступ активен на 24 часа.")
         send_requisites_menu(message.chat.id)
